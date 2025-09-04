@@ -1,0 +1,7 @@
+torch
+torchvision
+torchaudio
+facenet-pytorch
+numpy==1.26.4
+opencv-python==4.7.0.72
+matplotlib
