@@ -1,0 +1,5 @@
+# Ignore Python and VS Code specific files
+.vscode/
+.venv/
+known_faces/
+*.pkl
