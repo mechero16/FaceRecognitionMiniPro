@@ -69,10 +69,42 @@ def delete_face(name):
 
     print(f"[INFO] Successfully deleted face '{name}'.")
 
+
+# ================================
+# Camera Selection
+# ================================
+print("[INFO] Searching for available cameras...")
+available_cameras = []
+for i in range(10): # Check a range of common camera indices
+    try:
+        cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret:
+                available_cameras.append(i)
+            cap.release()
+    except:
+        continue
+
+if not available_cameras:
+    print("[ERROR] No cameras found. Please check your camera connections.")
+    exit()
+
+print(f"[INFO] Found the following cameras: {available_cameras}")
+
+camera_index = -1
+while camera_index not in available_cameras:
+    try:
+        camera_index = int(input("Please enter the index of the camera you want to use: "))
+        if camera_index not in available_cameras:
+            print("[WARN] Invalid camera index. Please choose from the available cameras.")
+    except ValueError:
+        print("[WARN] Invalid input. Please enter a number.")
+
 # ================================
 # Start Webcam
 # ================================
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
 detected_faces = set()
 saving_mode = False
 save_count = 0
@@ -81,6 +113,7 @@ save_name = None
 while True:
     ret, frame = cap.read()
     if not ret:
+        print("[ERROR] Failed to read frame from camera. Exiting.")
         break
 
     # Detect faces
