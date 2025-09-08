@@ -6,6 +6,7 @@ import os
 import pickle
 import shutil
 from facenet_pytorch import MTCNN, InceptionResnetV1
+import json
 
 # ================================
 # Setup
@@ -27,36 +28,31 @@ resnet = InceptionResnetV1(pretrained="vggface2").eval().to(device)
 if os.path.exists(EMBEDDINGS_FILE):
     with open(EMBEDDINGS_FILE, "rb") as f:
         data = pickle.load(f)
-    known_face_encodings = data["encodings"]
-    known_face_names = data["names"]
+    known_face_encodings = data["encodings"]   # dict {name: embedding_vector}
 else:
-    known_face_encodings = []
-    known_face_names = []
+    known_face_encodings = {}
 
-print(f"[INFO] Total known faces loaded: {len(set(known_face_names))}")
+print(f"[INFO] Total known faces loaded: {len(known_face_encodings)}")
 
 # ================================
 # Save embeddings helper
 # ================================
 def save_embeddings():
     with open(EMBEDDINGS_FILE, "wb") as f:
-        pickle.dump({"encodings": known_face_encodings, "names": known_face_names}, f)
+        pickle.dump({"encodings": known_face_encodings}, f)
     print("[INFO] Embeddings updated.")
 
 # ================================
 # Delete face function
 # ================================
 def delete_face(name):
-    global known_face_encodings, known_face_names
+    global known_face_encodings
 
-    if name not in known_face_names:
+    if name not in known_face_encodings:
         print(f"[WARN] No face found with name '{name}'.")
         return
 
-    # Remove embeddings for this name
-    indices_to_keep = [i for i, n in enumerate(known_face_names) if n != name]
-    known_face_encodings = [known_face_encodings[i] for i in indices_to_keep]
-    known_face_names = [known_face_names[i] for i in indices_to_keep]
+    del known_face_encodings[name]
 
     # Save updated embeddings
     save_embeddings()
@@ -69,13 +65,18 @@ def delete_face(name):
 
     print(f"[INFO] Successfully deleted face '{name}'.")
 
+# ================================
+# Cosine similarity helper
+# ================================
+def cosine_similarity(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
 
 # ================================
 # Camera Selection
 # ================================
 print("[INFO] Searching for available cameras...")
 available_cameras = []
-for i in range(10): # Check a range of common camera indices
+for i in range(10):  # Check a range of common camera indices
     try:
         cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
         if cap.isOpened():
@@ -109,6 +110,7 @@ detected_faces = set()
 saving_mode = False
 save_count = 0
 save_name = None
+temp_embeddings = []
 
 while True:
     ret, frame = cap.read()
@@ -146,23 +148,26 @@ while True:
                 name = "Unknown"
 
                 if len(known_face_encodings) > 0:
-                    distances = [np.linalg.norm(embedding - known) for known in known_face_encodings]
-                    min_distance = min(distances)
-                    best_match = np.argmin(distances)
+                    similarities = {
+                        person: cosine_similarity(embedding, known_emb)
+                        for person, known_emb in known_face_encodings.items()
+                    }
+                    best_match = max(similarities, key=similarities.get)
+                    best_score = similarities[best_match]
 
-                    if min_distance < 0.75:  # threshold
-                        name = known_face_names[best_match]
+                    if best_score > 0.65:  # cosine similarity threshold
+                        name = best_match
 
                 x1, y1, x2, y2 = coords[i]
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, name, (x1, y1 - 10),
+                cv2.putText(frame, f"{name}", (x1, y1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
                 if name != "Unknown":
                     current_faces.add(name)
 
                 # ================================
-                # Save new faces (up to 30)
+                # Save new faces (collect embeddings first)
                 # ================================
                 if saving_mode and save_count < 30:
                     person_dir = os.path.join(KNOWN_FACES_DIR, save_name)
@@ -173,13 +178,15 @@ while True:
                     if face_img.size != 0:
                         cv2.imwrite(img_path, face_img)
 
-                        known_face_encodings.append(embedding)
-                        known_face_names.append(save_name)
-
+                        temp_embeddings.append(embedding)
                         save_count += 1
                         print(f"[INFO] Saved {img_path}")
 
                     if save_count == 30:
+                        # Store average embedding for this person
+                        avg_embedding = np.mean(temp_embeddings, axis=0)
+                        known_face_encodings[save_name] = avg_embedding
+                        temp_embeddings = []
                         saving_mode = False
                         save_embeddings()
                         print(f"[INFO] Finished saving 30 images & embeddings for {save_name}")
@@ -191,6 +198,8 @@ while True:
         detected_faces = current_faces.copy()
         if detected_faces:
             print("Visible faces:", detected_faces)
+            with open("data.json", "w") as json_file:
+                json.dump(list(detected_faces), json_file, indent=4)
 
     # ================================
     # Key controls
@@ -200,6 +209,7 @@ while True:
         save_name = input("Enter name/USN for this face: ")
         saving_mode = True
         save_count = 0
+        temp_embeddings = []
         print(f"[INFO] Saving up to 30 images for {save_name}...")
 
     if key == ord('d'):  # ✅ delete mode
