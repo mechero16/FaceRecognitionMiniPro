@@ -6,11 +6,13 @@ import os
 import pickle
 import shutil
 from facenet_pytorch import MTCNN, InceptionResnetV1
-import json
 import platform
+import json
+
+os_name = platform.system()  # "Windows", "Linux", or "Darwin" (macOS)
 
 # ================================
-# Setup
+# 1. Setup
 # ================================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[INFO] Using device: {device}")
@@ -24,28 +26,19 @@ mtcnn = MTCNN(keep_all=True, device=device)
 resnet = InceptionResnetV1(pretrained="vggface2").eval().to(device)
 
 # ================================
-# Load Known Faces Embeddings
+# 2. Load Known Faces Embeddings
 # ================================
 if os.path.exists(EMBEDDINGS_FILE):
     with open(EMBEDDINGS_FILE, "rb") as f:
         data = pickle.load(f)
-    # Check if the loaded data is a dictionary with an 'encodings' key
-    if isinstance(data, dict) and 'encodings' in data:
-        known_face_encodings = data["encodings"]
-    else:
-        # If it's an old format (e.g., a simple list), treat it as empty
-        # and let the user re-register faces.
-        known_face_encodings = {}
-        print("[WARN] Old or corrupted embeddings file detected. Starting with no known faces.")
-        # Optionally, you could delete the old file to force a clean start
-        # os.remove(EMBEDDINGS_FILE)
+    known_face_encodings = data["encodings"]
 else:
     known_face_encodings = {}
 
 print(f"[INFO] Total known faces loaded: {len(known_face_encodings)}")
 
 # ================================
-# Save embeddings helper
+# 3. Save embeddings helper
 # ================================
 def save_embeddings():
     with open(EMBEDDINGS_FILE, "wb") as f:
@@ -53,7 +46,7 @@ def save_embeddings():
     print("[INFO] Embeddings updated.")
 
 # ================================
-# Delete face function
+# 4. Delete face function
 # ================================
 def delete_face(name):
     global known_face_encodings
@@ -63,8 +56,6 @@ def delete_face(name):
         return
 
     del known_face_encodings[name]
-
-    # Save updated embeddings
     save_embeddings()
 
     # Remove folder
@@ -76,30 +67,24 @@ def delete_face(name):
     print(f"[INFO] Successfully deleted face '{name}'.")
 
 # ================================
-# Cosine similarity helper
+# 5. Cosine similarity helper
 # ================================
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
 
 # ================================
-# Camera Selection (Cross-Platform)
+# 6. Camera Selection (Cross-Platform)
 # ================================
 print("[INFO] Searching for available cameras...")
 available_cameras = []
-os_name = platform.system()
-
-for i in range(10):  # Check a range of common camera indices
-    cap = None
+for i in range(10):
     try:
-        # Try without a specific backend first
         cap = cv2.VideoCapture(i)
         if not cap.isOpened():
-            # If that fails, try a specific backend based on the OS
             if os_name == "Windows":
                 cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
             elif os_name == "Linux":
                 cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
-            # Default to no backend if not Windows/Linux
             else:
                 cap = cv2.VideoCapture(i)
 
@@ -130,7 +115,7 @@ while camera_index not in available_cameras:
         print("[WARN] Invalid input. Please enter a number.")
 
 # ================================
-# Start Webcam
+# 7. Start Webcam
 # ================================
 if os_name == "Windows":
     cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
@@ -145,13 +130,15 @@ save_count = 0
 save_name = None
 temp_embeddings = []
 
+# ================================
+# 8. Main Loop
+# ================================
 while True:
     ret, frame = cap.read()
     if not ret:
         print("[ERROR] Failed to read frame from camera. Exiting.")
         break
 
-    # Detect faces
     boxes, probs = mtcnn.detect(frame)
     current_faces = set()
 
@@ -168,7 +155,7 @@ while True:
             face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
             face_tensor = torch.tensor(face_rgb).permute(2, 0, 1).float() / 255
             face_tensor = F.interpolate(face_tensor.unsqueeze(0), size=(160, 160),
-                                         mode="bilinear", align_corners=False)
+                                        mode="bilinear", align_corners=False)
             faces.append(face_tensor)
             coords.append((x1, y1, x2, y2))
 
@@ -188,7 +175,7 @@ while True:
                     best_match = max(similarities, key=similarities.get)
                     best_score = similarities[best_match]
 
-                    if best_score > 0.65:  # cosine similarity threshold
+                    if best_score > 0.65:
                         name = best_match
 
                 x1, y1, x2, y2 = coords[i]
@@ -200,42 +187,50 @@ while True:
                     current_faces.add(name)
 
                 # ================================
-                # Save new faces (collect embeddings first)
+                # 8a. Save faces (only if ONE face is present)
                 # ================================
                 if saving_mode and save_count < 30:
-                    person_dir = os.path.join(KNOWN_FACES_DIR, save_name)
-                    os.makedirs(person_dir, exist_ok=True)
-                    img_path = os.path.join(person_dir, f"{save_name}_{save_count}.jpg")
+                    if len(coords) == 1:  # ✅ only one face allowed
+                        face_img = frame[y1:y2, x1:x2]
+                        if face_img.size != 0:
+                            person_dir = os.path.join(KNOWN_FACES_DIR, save_name)
+                            os.makedirs(person_dir, exist_ok=True)
+                            img_path = os.path.join(person_dir, f"{save_name}_{save_count}.jpg")
 
-                    face_img = frame[y1:y2, x1:x2]
-                    if face_img.size != 0:
-                        cv2.imwrite(img_path, face_img)
+                            cv2.imwrite(img_path, face_img)
+                            temp_embeddings.append(embedding)
+                            save_count += 1
+                            print(f"[INFO] Saved {img_path}")
 
-                        temp_embeddings.append(embedding)
-                        save_count += 1
-                        print(f"[INFO] Saved {img_path}")
+                            # ✅ Preview for confirmation
+                            preview = face_img.copy()
+                            cv2.putText(preview, save_name, (10, 25),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                            cv2.imshow("Saving Face Preview", preview)
 
-                    if save_count == 30:
-                        # Store average embedding for this person
-                        avg_embedding = np.mean(temp_embeddings, axis=0)
-                        known_face_encodings[save_name] = avg_embedding
-                        temp_embeddings = []
-                        saving_mode = False
-                        save_embeddings()
-                        print(f"[INFO] Finished saving 30 images & embeddings for {save_name}")
+                        if save_count == 30:
+                            avg_embedding = np.mean(temp_embeddings, axis=0)
+                            known_face_encodings[save_name] = avg_embedding
+                            temp_embeddings = []
+                            saving_mode = False
+                            save_embeddings()
+                            print(f"[INFO] Finished saving 30 images & embeddings for {save_name}")
+                    else:
+                        cv2.putText(frame, "⚠ Show ONLY ONE face!", (50, 50),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
 
     # ================================
-    # Print only if visible set changes
+    # 9. Print visible faces
     # ================================
     if current_faces != detected_faces:
         detected_faces = current_faces.copy()
         if detected_faces:
             print("Visible faces:", detected_faces)
-            with open("data.json", "w") as json_file:
+            with open("visiblefaces.json", "w") as json_file:
                 json.dump(list(detected_faces), json_file, indent=4)
 
     # ================================
-    # Key controls
+    # 10. Key controls
     # ================================
     key = cv2.waitKey(1) & 0xFF
     if key == ord('s') and not saving_mode:
@@ -245,7 +240,7 @@ while True:
         temp_embeddings = []
         print(f"[INFO] Saving up to 30 images for {save_name}...")
 
-    if key == ord('d'):  # ✅ delete mode
+    if key == ord('d'):
         name_to_delete = input("Enter the name to delete: ")
         delete_face(name_to_delete)
 
