@@ -7,6 +7,7 @@ import pickle
 import shutil
 from facenet_pytorch import MTCNN, InceptionResnetV1
 import json
+import platform
 
 # ================================
 # Setup
@@ -28,7 +29,16 @@ resnet = InceptionResnetV1(pretrained="vggface2").eval().to(device)
 if os.path.exists(EMBEDDINGS_FILE):
     with open(EMBEDDINGS_FILE, "rb") as f:
         data = pickle.load(f)
-    known_face_encodings = data["encodings"]   # dict {name: embedding_vector}
+    # Check if the loaded data is a dictionary with an 'encodings' key
+    if isinstance(data, dict) and 'encodings' in data:
+        known_face_encodings = data["encodings"]
+    else:
+        # If it's an old format (e.g., a simple list), treat it as empty
+        # and let the user re-register faces.
+        known_face_encodings = {}
+        print("[WARN] Old or corrupted embeddings file detected. Starting with no known faces.")
+        # Optionally, you could delete the old file to force a clean start
+        # os.remove(EMBEDDINGS_FILE)
 else:
     known_face_encodings = {}
 
@@ -72,19 +82,36 @@ def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
 
 # ================================
-# Camera Selection
+# Camera Selection (Cross-Platform)
 # ================================
 print("[INFO] Searching for available cameras...")
 available_cameras = []
+os_name = platform.system()
+
 for i in range(10):  # Check a range of common camera indices
+    cap = None
     try:
-        cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+        # Try without a specific backend first
+        cap = cv2.VideoCapture(i)
+        if not cap.isOpened():
+            # If that fails, try a specific backend based on the OS
+            if os_name == "Windows":
+                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            elif os_name == "Linux":
+                cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+            # Default to no backend if not Windows/Linux
+            else:
+                cap = cv2.VideoCapture(i)
+
         if cap.isOpened():
             ret, frame = cap.read()
             if ret:
                 available_cameras.append(i)
             cap.release()
-    except:
+    except Exception as e:
+        print(f"Error checking camera {i}: {e}")
+        if cap:
+            cap.release()
         continue
 
 if not available_cameras:
@@ -105,7 +132,13 @@ while camera_index not in available_cameras:
 # ================================
 # Start Webcam
 # ================================
-cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+if os_name == "Windows":
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+elif os_name == "Linux":
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+else:
+    cap = cv2.VideoCapture(camera_index)
+
 detected_faces = set()
 saving_mode = False
 save_count = 0
@@ -135,7 +168,7 @@ while True:
             face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
             face_tensor = torch.tensor(face_rgb).permute(2, 0, 1).float() / 255
             face_tensor = F.interpolate(face_tensor.unsqueeze(0), size=(160, 160),
-                                        mode="bilinear", align_corners=False)
+                                         mode="bilinear", align_corners=False)
             faces.append(face_tensor)
             coords.append((x1, y1, x2, y2))
 
